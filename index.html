@@ -192,7 +192,9 @@ const STATE = {
   capturedDataUrl: null,
   capturedImageData: null,
   measureListenersAttached: false,
-  markerInfo: {}, // extra info (id, etc)
+  markerInfo: {},
+  homography: null,
+  useHomography: false,
 };
 
 const MAGNIFIER_ZOOM = 5;
@@ -308,11 +310,87 @@ function setupDetectImage() {
   document.getElementById('detect-photo').style.display = 'block';
 }
 
+// ===== Homography 보정 =====
+function computeHomography(src, dst) {
+  // src, dst: [{x,y}, {x,y}, {x,y}, {x,y}]
+  // 4점 대응에서 3x3 변환 행렬 계산
+  const A = [];
+  for (let i = 0; i < 4; i++) {
+    const s = src[i], d = dst[i];
+    A.push([-s.x, -s.y, -1, 0, 0, 0, d.x*s.x, d.x*s.y, d.x]);
+    A.push([0, 0, 0, -s.x, -s.y, -1, d.y*s.x, d.y*s.y, d.y]);
+  }
+  // SVD 대신 간단한 가우스 소거법으로 풀기 (8x9 → h 벡터)
+  const n = 8;
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
+    }
+    [A[col], A[maxRow]] = [A[maxRow], A[col]];
+    if (Math.abs(A[col][col]) < 1e-10) return null;
+    for (let row = col + 1; row < n; row++) {
+      const f = A[row][col] / A[col][col];
+      for (let j = col; j <= n; j++) A[row][j] -= f * A[col][j];
+    }
+  }
+  const h = new Array(9);
+  h[8] = 1;
+  for (let i = n - 1; i >= 0; i--) {
+    let sum = A[i][n];
+    for (let j = i + 1; j < n; j++) sum -= A[i][j] * h[j];
+    h[i] = sum / A[i][i];
+  }
+  return h;
+}
+
+function applyHomography(h, pt) {
+  const w = h[6]*pt.x + h[7]*pt.y + h[8];
+  return {
+    x: (h[0]*pt.x + h[1]*pt.y + h[2]) / w,
+    y: (h[3]*pt.x + h[4]*pt.y + h[5]) / w,
+  };
+}
+
 function onMarkerDetected() {
   const markerRealMm = parseFloat(document.getElementById('marker-real-size').value) || 44;
   const sides = calcSides(STATE.corners);
   const avgSide = sides.reduce((a,b)=>a+b,0) / 4;
-  STATE.pxPerMm = avgSide / markerRealMm;
+  const sideDeviation = Math.max(...sides) - Math.min(...sides);
+  const skewRatio = Math.max(...sides) / Math.min(...sides);
+
+  // 이상치 필터: 변 길이 편차가 너무 크면 거부
+  if (skewRatio > 2.0) {
+    const status = document.getElementById('detect-status');
+    status.innerHTML = '<span class="error">마커 인식이 불안정합니다. 더 정면에서 다시 촬영해주세요.</span><br><button class="btn btn-ghost" style="margin-top:12px" onclick="resetAll()">다시 촬영</button>';
+    return;
+  }
+
+  // Homography 보정: 찌그러진 마커 → 정사각형으로 변환
+  // dst: 마커를 정사각형으로 펼친 좌표 (0,0)~(markerRealMm, markerRealMm)
+  const dst = [
+    {x:0, y:0}, {x:markerRealMm, y:0},
+    {x:markerRealMm, y:markerRealMm}, {x:0, y:markerRealMm},
+  ];
+  STATE.homography = computeHomography(STATE.corners, dst);
+
+  if (STATE.homography) {
+    // Homography 기반 px/mm: 마커 중심 근처에서의 스케일 계산
+    const center = {
+      x: (STATE.corners[0].x + STATE.corners[2].x) / 2,
+      y: (STATE.corners[0].y + STATE.corners[2].y) / 2,
+    };
+    const delta = 10; // 10px 이동
+    const c0 = applyHomography(STATE.homography, center);
+    const c1 = applyHomography(STATE.homography, {x: center.x + delta, y: center.y});
+    const mmPerPx = Math.sqrt((c1.x-c0.x)**2 + (c1.y-c0.y)**2) / delta;
+    STATE.pxPerMm = 1 / mmPerPx;
+    STATE.useHomography = true;
+  } else {
+    // Homography 실패 시 단순 비율
+    STATE.pxPerMm = avgSide / markerRealMm;
+    STATE.useHomography = false;
+  }
 
   const img = document.getElementById('detect-img');
   const overlay = document.getElementById('detect-overlay');
@@ -320,6 +398,7 @@ function onMarkerDetected() {
 
   const color = STATE.mode === 'qr' ? '#4ade80' : '#f59e0b';
   const label = STATE.mode === 'qr' ? 'QR' : `ArUco ID:${STATE.markerInfo.id}`;
+  const corrLabel = STATE.useHomography ? '보정됨' : '단순비율';
 
   function drawDetectOverlay() {
     STATE.displayW = img.clientWidth;
@@ -352,11 +431,10 @@ function onMarkerDetected() {
       ctx.fillText(i+1, x, y);
     });
 
-    // 디버그: 꼭짓점 좌표 표시
     const cornerInfo = STATE.corners.map((c,i) => `P${i+1}(${Math.round(c.x)},${Math.round(c.y)})`).join(' ');
 
-    status.innerHTML = `<span class="success">${label} 인식 완료</span><br>
-      <span style="font-size:12px;color:#888">${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기준 ${markerRealMm}mm</span><br>
+    status.innerHTML = `<span class="success">${label} 인식 완료 (${corrLabel})</span><br>
+      <span style="font-size:12px;color:#888">${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기울기 ${skewRatio.toFixed(2)} | 기준 ${markerRealMm}mm</span><br>
       <span style="font-size:10px;color:#666">${cornerInfo}</span>`;
     setTimeout(() => goPhase('measure'), 1500);
   }
@@ -520,8 +598,7 @@ function drawMeasureOverlay() {
     ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
     ctx.setLineDash([]);
 
-    const pxDist = Math.sqrt((t2.imgX-t1.imgX)**2 + (t2.imgY-t1.imgY)**2);
-    const mmDist = pxDist / STATE.pxPerMm;
+    const mmDist = measureDistance(STATE.taps[0], STATE.taps[1]);
     const mx=(x1+x2)/2, my=(y1+y2)/2;
     const text = `${(mmDist/10).toFixed(1)}cm`;
     ctx.font = 'bold 16px sans-serif';
@@ -549,7 +626,7 @@ function undoTap() {
 function showResult() {
   const t1=STATE.taps[0], t2=STATE.taps[1];
   const pxDist = Math.sqrt((t2.imgX-t1.imgX)**2 + (t2.imgY-t1.imgY)**2);
-  const mmDist = pxDist / STATE.pxPerMm;
+  const mmDist = measureDistance(t1, t2);
   const cmDist = mmDist / 10;
 
   const sides = calcSides(STATE.corners);
@@ -616,6 +693,20 @@ function renderHistory() {
       </div>
     </div>
   `).reverse().join('');
+}
+
+// ===== 거리 측정 (Homography 보정) =====
+function measureDistance(tap1, tap2) {
+  if (STATE.useHomography && STATE.homography) {
+    // 두 탭 포인트를 Homography로 변환 → 실제 mm 좌표에서 거리 계산
+    const p1 = applyHomography(STATE.homography, {x: tap1.imgX, y: tap1.imgY});
+    const p2 = applyHomography(STATE.homography, {x: tap2.imgX, y: tap2.imgY});
+    return Math.sqrt((p2.x-p1.x)**2 + (p2.y-p1.y)**2);
+  } else {
+    // 폴백: 단순 비율
+    const pxDist = Math.sqrt((tap2.imgX-tap1.imgX)**2 + (tap2.imgY-tap1.imgY)**2);
+    return pxDist / STATE.pxPerMm;
+  }
 }
 
 // ===== 유틸 =====
