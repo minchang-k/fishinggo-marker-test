@@ -321,9 +321,11 @@ function onMarkerDetected() {
   const color = STATE.mode === 'qr' ? '#4ade80' : '#f59e0b';
   const label = STATE.mode === 'qr' ? 'QR' : `ArUco ID:${STATE.markerInfo.id}`;
 
-  img.onload = function() {
+  function drawDetectOverlay() {
     STATE.displayW = img.clientWidth;
     STATE.displayH = img.clientHeight;
+    if (STATE.displayW === 0) { setTimeout(drawDetectOverlay, 50); return; }
+
     setupOverlay(overlay, STATE.displayW, STATE.displayH);
 
     const ctx = overlay.getContext('2d');
@@ -331,7 +333,7 @@ function onMarkerDetected() {
     const sy = STATE.displayH / STATE.imgH;
 
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.beginPath();
     STATE.corners.forEach((c,i) => {
       const x=c.x*sx, y=c.y*sy;
@@ -343,16 +345,28 @@ function onMarkerDetected() {
     STATE.corners.forEach((c,i) => {
       const x=c.x*sx, y=c.y*sy;
       ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x,y,6,0,Math.PI*2); ctx.fill();
       ctx.fillStyle = '#000';
       ctx.font = 'bold 9px sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(i+1, x, y);
     });
 
-    status.innerHTML = `<span class="success">${label} 인식 완료</span><br><span style="font-size:12px;color:#888">${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기준 ${markerRealMm}mm</span>`;
-    setTimeout(() => goPhase('measure'), 1000);
-  };
+    // 디버그: 꼭짓점 좌표 표시
+    const cornerInfo = STATE.corners.map((c,i) => `P${i+1}(${Math.round(c.x)},${Math.round(c.y)})`).join(' ');
+
+    status.innerHTML = `<span class="success">${label} 인식 완료</span><br>
+      <span style="font-size:12px;color:#888">${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기준 ${markerRealMm}mm</span><br>
+      <span style="font-size:10px;color:#666">${cornerInfo}</span>`;
+    setTimeout(() => goPhase('measure'), 1500);
+  }
+
+  // img.onload 레이스 컨디션 방지
+  if (img.complete && img.clientWidth > 0) {
+    drawDetectOverlay();
+  } else {
+    img.onload = drawDetectOverlay;
+  }
 }
 
 // ===== Phase 3: 탭 측정 =====
@@ -365,9 +379,11 @@ function initMeasurePhase() {
   STATE.taps = [];
   updateTapGuide();
 
-  img.onload = function() {
+  function onReady() {
     STATE.displayW = img.clientWidth;
     STATE.displayH = img.clientHeight;
+    if (STATE.displayW === 0) { setTimeout(onReady, 50); return; }
+
     setupOverlay(overlay, STATE.displayW, STATE.displayH);
     drawMeasureOverlay();
 
@@ -379,7 +395,13 @@ function initMeasurePhase() {
       wrap.addEventListener('mousedown', onMouseDown);
       STATE.measureListenersAttached = true;
     }
-  };
+  }
+
+  if (img.complete && img.clientWidth > 0) {
+    onReady();
+  } else {
+    img.onload = onReady;
+  }
 }
 
 let touchTimer = null;
