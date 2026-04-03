@@ -110,8 +110,7 @@ function drawQR() {
   container.innerHTML = svg;
 }
 
-// ArUco ID:0 마커 생성
-// js-aruco2로 감지 → 감지된 마커를 다시 그려서 호환성 보장
+// ArUco ID:0 마커 생성 (js-aruco2 ARUCO_4X4_1000 호환)
 function drawArUco() {
   const canvas = document.getElementById('aruco-canvas');
   const px = 600;
@@ -120,82 +119,65 @@ function drawArUco() {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
 
-  // 방법: 작은 테스트 이미지에 알려진 마커를 그리고 js-aruco2로 감지해서 검증
-  // 여기서는 js-aruco2의 SVG 생성 기능 사용
-  try {
-    // js-aruco2는 AR.Marker.generateSVG 같은 생성 함수가 없으므로
-    // 딕셔너리에서 직접 비트맵을 읽어서 그림
-    const dictName = 'ARUCO_4X4_1000';
-    const dict = AR.DICTIONARIES[dictName];
-    if (!dict) throw new Error('딕셔너리 없음: ' + dictName + '. 로드된 딕셔너리: ' + Object.keys(AR.DICTIONARIES).join(', '));
+  const dictName = 'ARUCO_4X4_1000';
+  const dict = AR.DICTIONARIES[dictName];
+  if (!dict) { showArucoError(ctx, px, 'Dictionary not loaded'); return; }
 
-    const markerId = 0;
-    const bits = dict.markerSize; // 내부 데이터 크기 (4)
-    const modules = bits + 2; // 테두리 포함 (6)
-    const code = dict.codeList[markerId];
-    const moduleSize = px / modules;
+  const markerId = 0;
+  const code = dict.codeList[markerId]; // [181, 50] for ID:0
+  const nBits = dict.nBits; // 16
 
-    // 디버그 출력
-    console.log('ArUco dict:', dictName, 'markerSize:', bits, 'code[0]:', code);
+  // 바이트 → 이진 문자열 (MSB first)
+  let binStr = '';
+  for (let i = 0; i < code.length; i++) {
+    binStr += code[i].toString(2).padStart(8, '0');
+  }
+  binStr = binStr.substring(0, nBits); // 16비트만
 
-    // 배경: 흰색
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, px, px);
+  console.log('ArUco ID:0 code:', code, '→ binary:', binStr);
 
-    // 테두리: 검정
-    ctx.fillStyle = '#000';
-    for (let i = 0; i < modules; i++) {
-      ctx.fillRect(i * moduleSize, 0, moduleSize, moduleSize);
-      ctx.fillRect(i * moduleSize, (modules-1) * moduleSize, moduleSize, moduleSize);
-      ctx.fillRect(0, i * moduleSize, moduleSize, moduleSize);
-      ctx.fillRect((modules-1) * moduleSize, i * moduleSize, moduleSize, moduleSize);
-    }
+  const bits = Math.sqrt(nBits); // 4
+  const modules = bits + 2; // 6
+  const moduleSize = px / modules;
 
-    // 데이터 영역: code 배열에서 비트 추출
-    // code 형식 확인 후 처리
-    if (Array.isArray(code)) {
-      for (let r = 0; r < bits; r++) {
-        for (let c = 0; c < bits; c++) {
-          let isBlack = false;
-          if (typeof code[r] === 'number') {
-            // 바이트 배열: 각 요소가 한 행의 비트
-            isBlack = (code[r] >> (bits - 1 - c)) & 1;
-          } else if (typeof code[r * bits + c] !== 'undefined') {
-            // 플랫 배열
-            isBlack = code[r * bits + c];
-          }
-          if (isBlack) {
-            ctx.fillStyle = '#000';
-            ctx.fillRect((c + 1) * moduleSize, (r + 1) * moduleSize, moduleSize, moduleSize);
-          }
-        }
+  // 전체 검정 (테두리 + 기본)
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, px, px);
+
+  // 데이터 영역: '1' = 흰색, '0' = 검정 (이미 검정이므로 흰색만 그림)
+  for (let r = 0; r < bits; r++) {
+    for (let c = 0; c < bits; c++) {
+      const bitIndex = r * bits + c;
+      if (binStr[bitIndex] === '1') {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect((c + 1) * moduleSize, (r + 1) * moduleSize, moduleSize, moduleSize);
       }
     }
-
-    // 검증: 방금 그린 마커를 js-aruco2로 감지 테스트
-    const testImageData = ctx.getImageData(0, 0, px, px);
-    const detector = new AR.Detector({ dictionaryName: dictName });
-    const detected = detector.detect(testImageData);
-    if (detected.length > 0) {
-      console.log('ArUco 자체 검증 성공: ID=' + detected[0].id);
-    } else {
-      console.warn('ArUco 자체 검증 실패 — 마커가 인식되지 않음');
-      // 에러 표시
-      canvas.parentElement.querySelector('.card-label').textContent = 'ArUco 생성 실패 — 콘솔 확인';
-      canvas.parentElement.querySelector('.card-label').style.color = 'red';
-    }
-
-  } catch(e) {
-    console.error('ArUco 마커 생성 에러:', e);
-    ctx.fillStyle = '#fee';
-    ctx.fillRect(0, 0, px, px);
-    ctx.fillStyle = '#c00';
-    ctx.font = '24px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('ArUco 생성 실패', px/2, px/2 - 20);
-    ctx.font = '14px sans-serif';
-    ctx.fillText(e.message, px/2, px/2 + 20);
   }
+
+  // 자체 검증
+  const testImageData = ctx.getImageData(0, 0, px, px);
+  const detector = new AR.Detector({ dictionaryName: dictName });
+  const detected = detector.detect(testImageData);
+  const label = canvas.parentElement.querySelector('.card-label');
+  if (detected.length > 0) {
+    console.log('ArUco 자체 검증 성공: ID=' + detected[0].id);
+    label.textContent = 'ArUco ID:' + detected[0].id + ' 44mm | FishingGo Test (검증 OK)';
+    label.style.color = '#090';
+  } else {
+    console.warn('ArUco 자체 검증 실패');
+    label.textContent = 'ArUco 생성 실패 — 콘솔 확인';
+    label.style.color = 'red';
+  }
+}
+
+function showArucoError(ctx, px, msg) {
+  ctx.fillStyle = '#fee';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = '#c00';
+  ctx.font = '20px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('에러: ' + msg, px/2, px/2);
 }
 
 window.onload = function() {
