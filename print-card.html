@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>테스트 카드 인쇄</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <style>
   body { font-family:-apple-system,sans-serif; padding:40px; background:#f5f5f5; }
   h1 { font-size:20px; margin-bottom:8px; }
@@ -67,7 +68,7 @@
   <div class="card-wrapper">
     <h3>QR 코드 카드 (40mm)</h3>
     <div class="card">
-      <canvas id="qr-canvas" class="qr-marker"></canvas>
+      <div id="qr-container" class="qr-marker" style="display:flex;align-items:center;justify-content:center;overflow:hidden;"></div>
       <div class="card-label">QR 44mm | FishingGo Test</div>
     </div>
   </div>
@@ -84,57 +85,26 @@
 <button class="print-btn" onclick="window.print()">인쇄하기</button>
 
 <script>
-// QR 코드 생성 (간단한 QR 생성기 - "FISHINGGO-40MM" 인코딩)
-// QR은 외부 라이브러리 없이 Canvas에 직접 그리기 위해 qrcode 패턴을 하드코딩
 function drawQR() {
-  const canvas = document.getElementById('qr-canvas');
-  const size = canvas.clientWidth;
-  canvas.width = size * 2;  // 고해상도
-  canvas.height = size * 2;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = false;
+  const qr = qrcode(0, 'L');
+  qr.addData('FISHINGGO-44MM');
+  qr.make();
 
-  // 21x21 QR code matrix for "FG40" (Version 1, L error correction)
-  // 간단한 텍스트를 인코딩한 패턴
-  const modules = 21;
-  const moduleSize = (size * 2) / modules;
-
-  // QR code pattern for "FG40" - pre-computed
-  const pattern = [
-    1,1,1,1,1,1,1,0,1,0,1,0,0,0,1,1,1,1,1,1,1,
-    1,0,0,0,0,0,1,0,0,1,0,1,0,0,1,0,0,0,0,0,1,
-    1,0,1,1,1,0,1,0,1,1,0,0,1,0,1,0,1,1,1,0,1,
-    1,0,1,1,1,0,1,0,0,0,1,1,0,0,1,0,1,1,1,0,1,
-    1,0,1,1,1,0,1,0,1,0,0,1,1,0,1,0,1,1,1,0,1,
-    1,0,0,0,0,0,1,0,0,1,1,0,0,0,1,0,0,0,0,0,1,
-    1,1,1,1,1,1,1,0,1,0,1,0,1,0,1,1,1,1,1,1,1,
-    0,0,0,0,0,0,0,0,1,1,0,1,0,0,0,0,0,0,0,0,0,
-    1,0,1,0,1,1,1,1,1,0,0,0,1,1,1,0,0,1,0,1,0,
-    0,1,0,1,0,0,0,1,0,0,1,1,0,1,0,1,0,0,1,0,1,
-    1,0,1,0,0,1,1,0,0,1,0,1,1,0,0,0,1,1,0,0,0,
-    0,1,1,1,0,0,0,0,1,0,1,0,0,1,1,0,0,1,1,0,1,
-    0,0,0,0,1,1,1,1,0,1,0,1,0,0,1,1,0,0,1,0,0,
-    0,0,0,0,0,0,0,0,1,0,0,0,1,0,1,0,0,1,0,1,1,
-    1,1,1,1,1,1,1,0,0,0,1,0,0,0,1,0,1,0,0,0,1,
-    1,0,0,0,0,0,1,0,1,0,1,1,1,0,0,1,0,0,1,1,0,
-    1,0,1,1,1,0,1,0,0,1,0,1,0,1,1,0,1,1,0,1,1,
-    1,0,1,1,1,0,1,0,1,0,0,0,0,0,1,1,0,1,0,0,0,
-    1,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0,1,0,1,1,1,
-    1,0,0,0,0,0,1,0,0,0,1,0,1,0,1,0,0,0,1,0,0,
-    1,1,1,1,1,1,1,0,1,0,0,1,0,0,1,1,1,0,1,0,1,
-  ];
-
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  for (let row = 0; row < modules; row++) {
-    for (let col = 0; col < modules; col++) {
-      if (pattern[row * modules + col]) {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(col * moduleSize, row * moduleSize, moduleSize, moduleSize);
+  const container = document.getElementById('qr-container');
+  // SVG로 생성하여 인쇄 품질 보장
+  const modules = qr.getModuleCount();
+  const size = 44; // mm 단위로 SVG viewBox 설정
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${modules} ${modules}" width="44mm" height="44mm" shape-rendering="crispEdges">`;
+  svg += `<rect width="${modules}" height="${modules}" fill="#fff"/>`;
+  for (let r = 0; r < modules; r++) {
+    for (let c = 0; c < modules; c++) {
+      if (qr.isDark(r, c)) {
+        svg += `<rect x="${c}" y="${r}" width="1" height="1" fill="#000"/>`;
       }
     }
   }
+  svg += '</svg>';
+  container.innerHTML = svg;
 }
 
 // ArUco ID:0, 4x4 (6x6 with border) 마커 생성
