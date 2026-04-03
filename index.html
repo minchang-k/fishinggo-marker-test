@@ -3,8 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>QR 측정 정밀도 테스트</title>
+<title>마커 측정 정밀도 테스트</title>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/cv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/aruco.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/dictionaries/aruco_4x4_1000.js"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; }
   body { font-family:-apple-system,'Pretendard',sans-serif; background:#111; color:#fff; min-height:100vh; overflow-x:hidden; }
@@ -71,35 +74,49 @@
 
   .info-box { background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; margin:12px 16px; font-size:12px; color:#94a3b8; line-height:1.6; max-width:600px; }
 
-  .size-input-row { display:flex; align-items:center; justify-content:center; gap:8px; padding:8px 16px; }
+  .size-input-row { display:flex; align-items:center; justify-content:center; gap:8px; padding:8px 16px; flex-wrap:wrap; }
   .size-input-row label { font-size:13px; color:#888; }
   .size-input-row input { background:#333; border:1px solid #555; border-radius:6px; padding:6px 10px; color:#fff; font-size:14px; width:70px; text-align:center; font-family:inherit; }
-  .size-input-row span { font-size:13px; color:#888; }
+  .size-input-row span { font-size:12px; color:#666; }
+
+  /* 토글 */
+  .toggle-row { display:flex; justify-content:center; padding:12px 16px; gap:0; }
+  .toggle-btn { padding:10px 24px; font-size:14px; font-weight:600; border:2px solid #3B5998; background:transparent; color:#3B5998; cursor:pointer; font-family:inherit; }
+  .toggle-btn:first-child { border-radius:8px 0 0 8px; }
+  .toggle-btn:last-child { border-radius:0 8px 8px 0; }
+  .toggle-btn.active { background:#3B5998; color:#fff; }
+  .toggle-btn:active { opacity:0.8; }
 
   .history-item { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #222; }
   .history-item .num { font-size:28px; font-weight:800; color:#4ade80; }
   .history-item .meta { font-size:12px; color:#888; text-align:right; }
+  .history-item .type-badge { font-size:10px; padding:2px 6px; border-radius:4px; font-weight:600; }
+  .type-qr { background:#1e3a5e; color:#60a5fa; }
+  .type-aruco { background:#3a2e1e; color:#f59e0b; }
 </style>
 </head>
 <body>
 
 <div class="steps">
   <div class="step active" id="step1">1. 촬영</div>
-  <div class="step" id="step2">2. QR인식</div>
+  <div class="step" id="step2">2. 인식</div>
   <div class="step" id="step3">3. 측정</div>
   <div class="step" id="step4">4. 결과</div>
 </div>
 
 <!-- Phase 1: 카메라 -->
 <div id="phase-camera">
-  <div class="info-box">
-    QR코드 카드와 측정할 물건을 함께 놓고 촬영하세요.<br>
-    가능하면 위에서 수직으로 촬영하면 정확도가 올라갑니다.
+  <div class="toggle-row">
+    <button class="toggle-btn active" id="toggle-qr" onclick="setMode('qr')">QR Code</button>
+    <button class="toggle-btn" id="toggle-aruco" onclick="setMode('aruco')">ArUco</button>
+  </div>
+  <div class="info-box" id="mode-info">
+    QR코드 카드와 측정할 물건을 함께 놓고 촬영하세요.
   </div>
   <div class="size-input-row">
-    <label>QR 실제 크기:</label>
-    <input type="number" id="qr-real-size" value="44" step="0.1">
-    <span>mm (인쇄 또는 화면에 표시된 QR의 실제 크기를 자로 재서 입력)</span>
+    <label>마커 실제 크기:</label>
+    <input type="number" id="marker-real-size" value="44" step="0.1">
+    <span>mm</span>
   </div>
   <div class="camera-wrap">
     <video id="video" autoplay playsinline></video>
@@ -110,13 +127,13 @@
   </div>
 </div>
 
-<!-- Phase 2: QR 인식 -->
+<!-- Phase 2: 인식 -->
 <div id="phase-detect" style="display:none">
   <div class="photo-wrap" id="detect-photo">
     <img id="detect-img">
     <canvas class="overlay-canvas" id="detect-overlay"></canvas>
   </div>
-  <div class="tap-guide" id="detect-status">QR코드 인식 중...</div>
+  <div class="tap-guide" id="detect-status">인식 중...</div>
 </div>
 
 <!-- Phase 3: 탭 측정 -->
@@ -149,8 +166,8 @@
       <div id="measure-details"></div>
     </div>
     <div class="result-card">
-      <h3>QR 인식 정보</h3>
-      <div id="qr-details"></div>
+      <h3>마커 인식 정보</h3>
+      <div id="marker-details"></div>
     </div>
     <div class="result-card">
       <h3>측정 이력</h3>
@@ -165,18 +182,31 @@
 <script>
 const STATE = {
   phase: 'camera',
+  mode: 'qr', // 'qr' or 'aruco'
   imgW: 0, imgH: 0,
   displayW: 0, displayH: 0,
-  qrCorners: null,
+  corners: null, // 4 corners [{x,y}]
   pxPerMm: 0,
   taps: [],
   history: [],
   capturedDataUrl: null,
   capturedImageData: null,
   measureListenersAttached: false,
+  markerInfo: {}, // extra info (id, etc)
 };
 
 const MAGNIFIER_ZOOM = 5;
+let arucoDetector = null;
+
+// ===== 모드 토글 =====
+function setMode(mode) {
+  STATE.mode = mode;
+  document.getElementById('toggle-qr').className = 'toggle-btn' + (mode==='qr' ? ' active' : '');
+  document.getElementById('toggle-aruco').className = 'toggle-btn' + (mode==='aruco' ? ' active' : '');
+  document.getElementById('mode-info').innerHTML = mode === 'qr'
+    ? 'QR코드 카드와 측정할 물건을 함께 놓고 촬영하세요.'
+    : 'ArUco 마커 카드와 측정할 물건을 함께 놓고 촬영하세요.<br><span style="color:#f59e0b">DICT_4X4 (ID:0) 마커를 사용합니다.</span>';
+}
 
 // ===== 초기화 =====
 async function init() {
@@ -190,6 +220,13 @@ async function init() {
   } catch(e) {
     document.getElementById('phase-camera').innerHTML =
       `<div class="info-box" style="color:#ef4444">카메라 접근 실패: ${e.message}<br><br>HTTPS 환경에서만 카메라가 작동합니다.</div>`;
+  }
+
+  // ArUco 디텍터 초기화
+  try {
+    arucoDetector = new AR.Detector({ dictionaryName: 'ARUCO_4X4_1000' });
+  } catch(e) {
+    console.warn('ArUco detector init failed:', e);
   }
 }
 
@@ -209,18 +246,19 @@ function capture() {
   STATE.capturedImageData = ctx.getImageData(0, 0, STATE.imgW, STATE.imgH);
 
   goPhase('detect');
-  detectQR();
+  detectMarker();
 }
 
-// ===== Phase 2: QR 인식 (jsQR) =====
-function detectQR() {
-  const img = document.getElementById('detect-img');
-  const overlay = document.getElementById('detect-overlay');
-  const status = document.getElementById('detect-status');
+// ===== Phase 2: 마커 인식 =====
+function detectMarker() {
+  if (STATE.mode === 'qr') detectQR();
+  else detectArUco();
+}
 
-  img.src = STATE.capturedDataUrl;
-  document.getElementById('detect-photo').style.display = 'block';
+function detectQR() {
+  const status = document.getElementById('detect-status');
   status.textContent = 'QR코드 인식 중...';
+  setupDetectImage();
 
   const qr = jsQR(STATE.capturedImageData.data, STATE.imgW, STATE.imgH, { inversionAttempts:'dontInvert' });
 
@@ -229,45 +267,90 @@ function detectQR() {
     return;
   }
 
-  STATE.qrCorners = [
+  STATE.corners = [
     { x: qr.location.topLeftCorner.x, y: qr.location.topLeftCorner.y },
     { x: qr.location.topRightCorner.x, y: qr.location.topRightCorner.y },
     { x: qr.location.bottomRightCorner.x, y: qr.location.bottomRightCorner.y },
     { x: qr.location.bottomLeftCorner.x, y: qr.location.bottomLeftCorner.y },
   ];
+  STATE.markerInfo = { type:'QR', content: qr.data || '(없음)' };
 
-  const qrRealMm = parseFloat(document.getElementById('qr-real-size').value) || 44;
-  const sides = calcSides(STATE.qrCorners);
+  onMarkerDetected();
+}
+
+function detectArUco() {
+  const status = document.getElementById('detect-status');
+  status.textContent = 'ArUco 마커 인식 중...';
+  setupDetectImage();
+
+  if (!arucoDetector) {
+    status.innerHTML = '<span class="error">ArUco 디텍터 초기화 실패</span><br><button class="btn btn-ghost" style="margin-top:12px" onclick="resetAll()">다시 촬영</button>';
+    return;
+  }
+
+  const markers = arucoDetector.detect(STATE.capturedImageData);
+
+  if (!markers || markers.length === 0) {
+    status.innerHTML = '<span class="error">ArUco 마커를 찾지 못했습니다</span><br><button class="btn btn-ghost" style="margin-top:12px" onclick="resetAll()">다시 촬영</button>';
+    return;
+  }
+
+  const marker = markers[0];
+  STATE.corners = marker.corners.map(c => ({ x: c.x, y: c.y }));
+  STATE.markerInfo = { type:'ArUco', id: marker.id, hamming: marker.hammingDistance };
+
+  onMarkerDetected();
+}
+
+function setupDetectImage() {
+  const img = document.getElementById('detect-img');
+  img.src = STATE.capturedDataUrl;
+  document.getElementById('detect-photo').style.display = 'block';
+}
+
+function onMarkerDetected() {
+  const markerRealMm = parseFloat(document.getElementById('marker-real-size').value) || 44;
+  const sides = calcSides(STATE.corners);
   const avgSide = sides.reduce((a,b)=>a+b,0) / 4;
-  STATE.pxPerMm = avgSide / qrRealMm;
+  STATE.pxPerMm = avgSide / markerRealMm;
 
-  // 이미지 로드 후 오버레이
+  const img = document.getElementById('detect-img');
+  const overlay = document.getElementById('detect-overlay');
+  const status = document.getElementById('detect-status');
+
+  const color = STATE.mode === 'qr' ? '#4ade80' : '#f59e0b';
+  const label = STATE.mode === 'qr' ? 'QR' : `ArUco ID:${STATE.markerInfo.id}`;
+
   img.onload = function() {
     STATE.displayW = img.clientWidth;
     STATE.displayH = img.clientHeight;
     setupOverlay(overlay, STATE.displayW, STATE.displayH);
 
-    const dctx = overlay.getContext('2d');
+    const ctx = overlay.getContext('2d');
     const sx = STATE.displayW / STATE.imgW;
     const sy = STATE.displayH / STATE.imgH;
 
-    dctx.strokeStyle = '#4ade80';
-    dctx.lineWidth = 2;
-    dctx.beginPath();
-    STATE.qrCorners.forEach((c,i) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    STATE.corners.forEach((c,i) => {
       const x=c.x*sx, y=c.y*sy;
-      i===0 ? dctx.moveTo(x,y) : dctx.lineTo(x,y);
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
     });
-    dctx.closePath();
-    dctx.stroke();
+    ctx.closePath();
+    ctx.stroke();
 
-    STATE.qrCorners.forEach((c,i) => {
+    STATE.corners.forEach((c,i) => {
       const x=c.x*sx, y=c.y*sy;
-      dctx.fillStyle='#4ade80';
-      dctx.beginPath(); dctx.arc(x,y,5,0,Math.PI*2); dctx.fill();
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 9px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(i+1, x, y);
     });
 
-    status.innerHTML = `<span class="success">QR 인식 완료</span><br><span style="font-size:12px;color:#888">QR ${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기준 ${qrRealMm}mm</span>`;
+    status.innerHTML = `<span class="success">${label} 인식 완료</span><br><span style="font-size:12px;color:#888">${avgSide.toFixed(0)}px | ${STATE.pxPerMm.toFixed(2)} px/mm | 기준 ${markerRealMm}mm</span>`;
     setTimeout(() => goPhase('measure'), 1000);
   };
 }
@@ -381,28 +464,21 @@ function showMagnifier(dx, dy) {
   ctx.drawImage(tempCanvas, imgX - srcSize/2, imgY - srcSize/2, srcSize, srcSize, 0, 0, 240, 240);
 }
 
-function hideMagnifier() {
-  document.getElementById('magnifier').style.display = 'none';
-}
+function hideMagnifier() { document.getElementById('magnifier').style.display = 'none'; }
 
 function drawMeasureOverlay() {
   const overlay = document.getElementById('measure-overlay');
   const ctx = overlay.getContext('2d');
   const sx = STATE.displayW / STATE.imgW;
   const sy = STATE.displayH / STATE.imgH;
+  const color = STATE.mode === 'qr' ? 'rgba(74,222,128,0.4)' : 'rgba(245,158,11,0.4)';
   ctx.clearRect(0, 0, STATE.displayW, STATE.displayH);
 
-  // QR 테두리
-  ctx.strokeStyle = 'rgba(74,222,128,0.4)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = color; ctx.lineWidth = 1;
   ctx.beginPath();
-  STATE.qrCorners.forEach((c,i) => {
-    i===0 ? ctx.moveTo(c.x*sx,c.y*sy) : ctx.lineTo(c.x*sx,c.y*sy);
-  });
-  ctx.closePath();
-  ctx.stroke();
+  STATE.corners.forEach((c,i) => { i===0 ? ctx.moveTo(c.x*sx,c.y*sy) : ctx.lineTo(c.x*sx,c.y*sy); });
+  ctx.closePath(); ctx.stroke();
 
-  // 탭 포인트
   STATE.taps.forEach((t, i) => {
     const x=t.imgX*sx, y=t.imgY*sy;
     ctx.fillStyle = '#ef4444';
@@ -413,7 +489,6 @@ function drawMeasureOverlay() {
     ctx.fillText(i+1, x, y);
   });
 
-  // 연결선 + 결과
   if (STATE.taps.length === 2) {
     const t1=STATE.taps[0], t2=STATE.taps[1];
     const x1=t1.imgX*sx, y1=t1.imgY*sy, x2=t2.imgX*sx, y2=t2.imgY*sy;
@@ -455,12 +530,23 @@ function showResult() {
   const mmDist = pxDist / STATE.pxPerMm;
   const cmDist = mmDist / 10;
 
-  const sides = calcSides(STATE.qrCorners);
+  const sides = calcSides(STATE.corners);
   const avgSide = sides.reduce((a,b)=>a+b,0)/4;
   const sideDeviation = Math.max(...sides)-Math.min(...sides);
-  const qrRealMm = parseFloat(document.getElementById('qr-real-size').value) || 44;
+  const skewRatio = Math.max(...sides)/Math.min(...sides);
+  const markerRealMm = parseFloat(document.getElementById('marker-real-size').value) || 44;
 
-  STATE.history.push({ mm:mmDist, cm:cmDist, pxPerMm:STATE.pxPerMm, pxDist, qrPixelSize:avgSide, imgSize:`${STATE.imgW}x${STATE.imgH}`, sideDeviation, qrRealMm });
+  STATE.history.push({
+    mode: STATE.mode,
+    mm: mmDist, cm: cmDist,
+    pxPerMm: STATE.pxPerMm, pxDist,
+    markerPixelSize: avgSide,
+    imgSize: `${STATE.imgW}x${STATE.imgH}`,
+    sideDeviation, skewRatio,
+    markerRealMm,
+    markerInfo: {...STATE.markerInfo},
+    corners: STATE.corners.map(c => ({x:c.x, y:c.y})),
+  });
 
   goPhase('result');
 
@@ -473,15 +559,19 @@ function showResult() {
     <div class="detail-row"><span class="label">1px 당</span><span class="value">${(1/STATE.pxPerMm).toFixed(4)}mm</span></div>
   `;
 
-  const hasFloat = STATE.qrCorners.some(c => c.x % 1 !== 0 || c.y % 1 !== 0);
-  document.getElementById('qr-details').innerHTML = `
+  const hasFloat = STATE.corners.some(c => c.x % 1 !== 0 || c.y % 1 !== 0);
+  const typeLabel = STATE.mode === 'qr' ? 'QR Code' : `ArUco ID:${STATE.markerInfo.id}`;
+  document.getElementById('marker-details').innerHTML = `
+    <div class="detail-row"><span class="label">마커 종류</span><span class="value">${typeLabel}</span></div>
     <div class="detail-row"><span class="label">이미지 크기</span><span class="value">${STATE.imgW}x${STATE.imgH}</span></div>
-    <div class="detail-row"><span class="label">QR 기준 크기</span><span class="value">${qrRealMm}mm</span></div>
-    <div class="detail-row"><span class="label">QR 픽셀 크기</span><span class="value">${avgSide.toFixed(2)}px</span></div>
+    <div class="detail-row"><span class="label">기준 크기</span><span class="value">${markerRealMm}mm</span></div>
+    <div class="detail-row"><span class="label">마커 픽셀 크기</span><span class="value">${avgSide.toFixed(2)}px</span></div>
     <div class="detail-row"><span class="label">변 길이 편차</span><span class="value ${sideDeviation > avgSide*0.15 ? 'warning' : 'success'}">${sideDeviation.toFixed(2)}px</span></div>
+    <div class="detail-row"><span class="label">비스듬함</span><span class="value ${skewRatio > 1.15 ? 'warning' : 'success'}">${skewRatio.toFixed(3)} ${skewRatio > 1.15 ? '(보정 필요)' : '(양호)'}</span></div>
     <div class="detail-row"><span class="label">좌표 정밀도</span><span class="value ${hasFloat ? 'success' : 'warning'}">${hasFloat ? '소수점 (정밀)' : '정수 (제한적)'}</span></div>
+    ${STATE.mode === 'aruco' ? `<div class="detail-row"><span class="label">해밍 거리</span><span class="value">${STATE.markerInfo.hamming}</span></div>` : ''}
     <div style="margin-top:8px;font-size:11px;color:#666;font-family:monospace;">
-      ${STATE.qrCorners.map((c,i) => `P${i+1}: (${c.x.toFixed(4)}, ${c.y.toFixed(4)})`).join('<br>')}
+      ${STATE.corners.map((c,i) => `P${i+1}: (${c.x.toFixed(4)}, ${c.y.toFixed(4)})`).join('<br>')}
     </div>
   `;
 
@@ -493,8 +583,15 @@ function renderHistory() {
   if (!STATE.history.length) { el.innerHTML = '<div style="color:#666;font-size:13px">아직 없음</div>'; return; }
   el.innerHTML = STATE.history.map((h,i) => `
     <div class="history-item">
-      <div><div class="num">${h.cm.toFixed(1)}cm</div><div style="font-size:11px;color:#666">${h.mm.toFixed(1)}mm</div></div>
-      <div class="meta">#${i+1}<br>QR ${h.qrPixelSize.toFixed(0)}px | ${h.pxPerMm.toFixed(2)}px/mm<br>${h.imgSize}</div>
+      <div>
+        <div class="num">${h.cm.toFixed(1)}cm</div>
+        <div style="font-size:11px;color:#666">${h.mm.toFixed(1)}mm</div>
+      </div>
+      <div class="meta">
+        #${i+1} <span class="type-badge ${h.mode==='qr'?'type-qr':'type-aruco'}">${h.mode==='qr'?'QR':'ArUco'}</span><br>
+        ${h.markerPixelSize.toFixed(0)}px | ${h.pxPerMm.toFixed(2)}px/mm<br>
+        ${h.imgSize}
+      </div>
     </div>
   `).reverse().join('');
 }
@@ -529,8 +626,9 @@ function goPhase(phase) {
 }
 
 function resetAll() {
-  STATE.qrCorners = null; STATE.pxPerMm = 0; STATE.taps = [];
+  STATE.corners = null; STATE.pxPerMm = 0; STATE.taps = [];
   STATE.capturedDataUrl = null; STATE.capturedImageData = null;
+  STATE.markerInfo = {};
   document.getElementById('detect-photo').style.display = 'none';
   document.getElementById('measure-photo').style.display = 'none';
   goPhase('camera');
