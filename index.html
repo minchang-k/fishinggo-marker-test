@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>QR 측정 정밀도 테스트</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; }
+  body { font-family:-apple-system,'Pretendard',sans-serif; background:#111; color:#fff; min-height:100vh; overflow-x:hidden; }
+
+  /* 단계 표시 */
+  .steps { display:flex; padding:12px 16px; background:#1a1a1a; border-bottom:1px solid #333; gap:4px; }
+  .step { flex:1; text-align:center; font-size:11px; padding:6px 0; border-radius:6px; color:#666; font-weight:600; }
+  .step.active { background:#3B5998; color:#fff; }
+  .step.done { background:#1e3a1e; color:#4ade80; }
+
+  /* 카메라 */
+  .camera-wrap { position:relative; width:100%; max-width:600px; margin:0 auto; background:#000; }
+  .camera-wrap video { width:100%; display:block; }
+  .camera-wrap canvas { display:none; }
+
+  /* 촬영 버튼 */
+  .shutter-wrap { display:flex; justify-content:center; padding:20px; background:#111; }
+  .shutter { width:72px; height:72px; border-radius:50%; border:4px solid #fff; background:transparent; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .shutter-inner { width:58px; height:58px; border-radius:50%; background:#fff; transition:transform 0.1s; }
+  .shutter:active .shutter-inner { transform:scale(0.9); }
+
+  /* 촬영된 사진 + 오버레이 */
+  .photo-wrap { position:relative; width:100%; max-width:600px; margin:0 auto; display:none; touch-action:none; }
+  .photo-wrap img { width:100%; display:block; }
+  .photo-wrap canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+
+  /* 탭 안내 */
+  .tap-guide { text-align:center; padding:16px; font-size:15px; font-weight:600; }
+  .tap-guide .sub { font-size:12px; color:#888; margin-top:4px; font-weight:400; }
+
+  /* 돋보기 */
+  .magnifier {
+    position:absolute; width:120px; height:120px; border-radius:50%;
+    border:3px solid #fff; box-shadow:0 4px 20px rgba(0,0,0,0.5);
+    overflow:hidden; display:none; pointer-events:none; z-index:50;
+  }
+  .magnifier canvas { width:100%; height:100%; }
+  .magnifier-crosshair {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:20px; height:20px; pointer-events:none;
+  }
+  .magnifier-crosshair::before, .magnifier-crosshair::after {
+    content:''; position:absolute; background:rgba(255,0,0,0.7);
+  }
+  .magnifier-crosshair::before { width:1px; height:100%; left:50%; top:0; }
+  .magnifier-crosshair::after { height:1px; width:100%; top:50%; left:0; }
+  .magnifier-dot {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:6px; height:6px; border-radius:50%; background:#ef4444; pointer-events:none;
+  }
+
+  /* 결과 */
+  .result-section { padding:16px; max-width:600px; margin:0 auto; }
+  .result-card { background:#1a1a1a; border-radius:12px; padding:16px; margin-bottom:12px; }
+  .result-card h3 { font-size:14px; color:#3B5998; margin-bottom:8px; }
+  .big-result { font-size:48px; font-weight:800; color:#4ade80; text-align:center; padding:24px 0; }
+  .big-result .unit { font-size:24px; font-weight:600; }
+  .detail-row { display:flex; justify-content:space-between; padding:6px 0; font-size:13px; border-bottom:1px solid #222; }
+  .detail-row .label { color:#888; }
+  .detail-row .value { color:#fff; font-family:'SF Mono',monospace; }
+  .error { color:#ef4444; }
+  .success { color:#4ade80; }
+  .warning { color:#fbbf24; }
+
+  /* 버튼 */
+  .btn-row { display:flex; gap:12px; padding:16px; justify-content:center; max-width:600px; margin:0 auto; }
+  .btn { padding:12px 24px; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; font-family:inherit; }
+  .btn-primary { background:#3B5998; color:#fff; }
+  .btn-danger { background:#ef4444; color:#fff; }
+  .btn-ghost { background:#333; color:#fff; }
+  .btn:active { opacity:0.8; }
+
+  .info-box { background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; margin:12px 16px; font-size:12px; color:#94a3b8; line-height:1.6; max-width:600px; }
+
+  .history-item { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #222; }
+  .history-item .num { font-size:28px; font-weight:800; color:#4ade80; }
+  .history-item .meta { font-size:12px; color:#888; text-align:right; }
+</style>
+</head>
+<body>
+
+<!-- 단계 표시 -->
+<div class="steps">
+  <div class="step active" id="step1">1. 촬영</div>
+  <div class="step" id="step2">2. QR인식</div>
+  <div class="step" id="step3">3. 측정</div>
+  <div class="step" id="step4">4. 결과</div>
+</div>
+
+<!-- Phase 1: 카메라 -->
+<div id="phase-camera">
+  <div class="info-box">
+    QR코드 카드와 측정할 물건을 함께 놓고 촬영하세요.<br>
+    가능하면 위에서 수직으로 촬영하면 정확도가 올라갑니다.
+  </div>
+  <div class="camera-wrap">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="capture-canvas"></canvas>
+  </div>
+  <div class="shutter-wrap">
+    <div class="shutter" onclick="capture()"><div class="shutter-inner"></div></div>
+  </div>
+</div>
+
+<!-- Phase 2: QR 인식 결과 (자동 전환) -->
+<div id="phase-detect" style="display:none">
+  <div class="photo-wrap" id="detect-photo">
+    <img id="detect-img">
+    <canvas id="detect-overlay"></canvas>
+  </div>
+  <div class="tap-guide" id="detect-status">QR코드 인식 중...</div>
+</div>
+
+<!-- Phase 3: 탭 측정 -->
+<div id="phase-measure" style="display:none">
+  <div class="tap-guide" id="tap-guide">
+    <span id="tap-text">측정할 물건의 <strong>시작점</strong>을 탭하세요</span>
+    <div class="sub">길게 누르면 돋보기로 정밀 조준할 수 있습니다</div>
+  </div>
+  <div class="photo-wrap" id="measure-photo">
+    <img id="measure-img">
+    <canvas id="measure-overlay"></canvas>
+    <div class="magnifier" id="magnifier">
+      <canvas id="mag-canvas" width="240" height="240"></canvas>
+      <div class="magnifier-crosshair"></div>
+      <div class="magnifier-dot"></div>
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-ghost" onclick="undoTap()">탭 취소</button>
+    <button class="btn btn-danger" onclick="resetAll()">다시 촬영</button>
+  </div>
+</div>
+
+<!-- Phase 4: 결과 -->
+<div id="phase-result" style="display:none">
+  <div class="result-section">
+    <div class="big-result" id="big-result">--</div>
+
+    <div class="result-card">
+      <h3>측정 상세</h3>
+      <div id="measure-details"></div>
+    </div>
+
+    <div class="result-card">
+      <h3>QR 인식 정보</h3>
+      <div id="qr-details"></div>
+    </div>
+
+    <div class="result-card">
+      <h3>측정 이력</h3>
+      <div id="history-list"></div>
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="resetAll()">다시 측정</button>
+  </div>
+</div>
+
+<script>
+// ===== 상태 =====
+const STATE = {
+  phase: 'camera', // camera, detect, measure, result
+  imgW: 0, imgH: 0,
+  displayW: 0, displayH: 0,
+  qrCorners: null,
+  pxPerMm: 0,
+  taps: [],       // [{imgX, imgY}] — 이미지 좌표
+  history: [],    // [{mm, pxPerMm, qrPixelSize, imgSize}]
+  capturedDataUrl: null,
+  capturedImageData: null,  // for magnifier
+};
+
+const QR_REAL_SIZE_MM = 44;
+const MAGNIFIER_ZOOM = 5;
+
+// ===== 초기화 =====
+async function init() {
+  const video = document.getElementById('video');
+
+  if (!('BarcodeDetector' in window)) {
+    document.getElementById('phase-camera').innerHTML =
+      '<div class="info-box" style="color:#ef4444">이 브라우저는 BarcodeDetector를 지원하지 않습니다.<br>Chrome(Android) 또는 Safari 17.2+(iOS)를 사용하세요.</div>';
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:'environment', width:{ideal:4032}, height:{ideal:3024} }
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch(e) {
+    document.getElementById('phase-camera').innerHTML =
+      `<div class="info-box" style="color:#ef4444">카메라 접근 실패: ${e.message}</div>`;
+  }
+}
+
+// ===== Phase 1: 촬영 =====
+function capture() {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('capture-canvas');
+  STATE.imgW = video.videoWidth;
+  STATE.imgH = video.videoHeight;
+  canvas.width = STATE.imgW;
+  canvas.height = STATE.imgH;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0);
+
+  STATE.capturedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+  STATE.capturedImageData = ctx.getImageData(0, 0, STATE.imgW, STATE.imgH);
+
+  // Phase 2로 전환
+  goPhase('detect');
+  detectQR(canvas);
+}
+
+// ===== Phase 2: QR 인식 =====
+async function detectQR(canvas) {
+  const img = document.getElementById('detect-img');
+  const overlay = document.getElementById('detect-overlay');
+  const status = document.getElementById('detect-status');
+
+  img.src = STATE.capturedDataUrl;
+  document.getElementById('detect-photo').style.display = 'block';
+
+  try {
+    const detector = new BarcodeDetector({ formats:['qr_code'] });
+    const barcodes = await detector.detect(canvas);
+
+    if (barcodes.length === 0) {
+      status.innerHTML = '<span class="error">QR코드를 찾지 못했습니다</span>';
+      setTimeout(() => {
+        status.innerHTML += '<br><button class="btn btn-ghost" style="margin-top:12px" onclick="resetAll()">다시 촬영</button>';
+      }, 500);
+      return;
+    }
+
+    const qr = barcodes[0];
+    STATE.qrCorners = qr.cornerPoints.map(c => ({x:c.x, y:c.y}));
+
+    // 변 길이 + px/mm
+    const sides = [];
+    for (let i=0; i<4; i++) {
+      const n = (i+1)%4;
+      const dx = STATE.qrCorners[n].x - STATE.qrCorners[i].x;
+      const dy = STATE.qrCorners[n].y - STATE.qrCorners[i].y;
+      sides.push(Math.sqrt(dx*dx + dy*dy));
+    }
+    const avgSide = sides.reduce((a,b)=>a+b,0) / 4;
+    STATE.pxPerMm = avgSide / QR_REAL_SIZE_MM;
+
+    // 오버레이 그리기
+    img.onload = function() {
+      STATE.displayW = img.clientWidth;
+      STATE.displayH = img.clientHeight;
+      overlay.width = STATE.displayW;
+      overlay.height = STATE.displayH;
+      overlay.style.width = STATE.displayW + 'px';
+      overlay.style.height = STATE.displayH + 'px';
+
+      const ctx = overlay.getContext('2d');
+      const sx = STATE.displayW / STATE.imgW;
+      const sy = STATE.displayH / STATE.imgH;
+
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      STATE.qrCorners.forEach((c,i) => {
+        const x=c.x*sx, y=c.y*sy;
+        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+
+      STATE.qrCorners.forEach((c,i) => {
+        const x=c.x*sx, y=c.y*sy;
+        ctx.fillStyle='#4ade80';
+        ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill();
+      });
+
+      status.innerHTML = `<span class="success">QR 인식 완료</span><br><span style="font-size:12px;color:#888">QR ${avgSide.toFixed(0)}px · ${STATE.pxPerMm.toFixed(2)} px/mm</span>`;
+
+      // 1초 후 Phase 3으로
+      setTimeout(() => goPhase('measure'), 1000);
+    };
+
+  } catch(e) {
+    status.innerHTML = `<span class="error">인식 오류: ${e.message}</span>`;
+  }
+}
+
+// ===== Phase 3: 탭 측정 =====
+function initMeasurePhase() {
+  const img = document.getElementById('measure-img');
+  const overlay = document.getElementById('measure-overlay');
+
+  img.src = STATE.capturedDataUrl;
+  document.getElementById('measure-photo').style.display = 'block';
+  STATE.taps = [];
+
+  img.onload = function() {
+    STATE.displayW = img.clientWidth;
+    STATE.displayH = img.clientHeight;
+    overlay.width = STATE.displayW;
+    overlay.height = STATE.displayH;
+    overlay.style.width = STATE.displayW + 'px';
+    overlay.style.height = STATE.displayH + 'px';
+    drawMeasureOverlay();
+
+    // 터치 이벤트
+    const wrap = document.getElementById('measure-photo');
+    wrap.addEventListener('touchstart', onTouchStart, {passive:false});
+    wrap.addEventListener('touchmove', onTouchMove, {passive:false});
+    wrap.addEventListener('touchend', onTouchEnd, {passive:false});
+    // 마우스 (PC 테스트용)
+    wrap.addEventListener('mousedown', onMouseDown);
+  };
+}
+
+let touchTimer = null;
+let isMagnifying = false;
+let currentTouch = {x:0, y:0};
+
+function onTouchStart(e) {
+  e.preventDefault();
+  if (STATE.taps.length >= 2) return;
+  const t = e.touches[0];
+  const rect = e.currentTarget.getBoundingClientRect();
+  currentTouch.x = t.clientX - rect.left;
+  currentTouch.y = t.clientY - rect.top;
+
+  // 200ms 후 돋보기 표시
+  touchTimer = setTimeout(() => {
+    isMagnifying = true;
+    showMagnifier(currentTouch.x, currentTouch.y);
+  }, 200);
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  const t = e.touches[0];
+  const rect = e.currentTarget.getBoundingClientRect();
+  currentTouch.x = t.clientX - rect.left;
+  currentTouch.y = t.clientY - rect.top;
+
+  if (isMagnifying) {
+    showMagnifier(currentTouch.x, currentTouch.y);
+  }
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  clearTimeout(touchTimer);
+
+  if (STATE.taps.length >= 2) return;
+
+  // 이미지 좌표로 변환
+  const imgX = (currentTouch.x / STATE.displayW) * STATE.imgW;
+  const imgY = (currentTouch.y / STATE.displayH) * STATE.imgH;
+  STATE.taps.push({imgX, imgY});
+
+  hideMagnifier();
+  isMagnifying = false;
+  drawMeasureOverlay();
+  updateTapGuide();
+
+  if (STATE.taps.length === 2) {
+    // 진동
+    if (navigator.vibrate) navigator.vibrate(50);
+    setTimeout(() => showResult(), 500);
+  }
+}
+
+function onMouseDown(e) {
+  if (STATE.taps.length >= 2) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const dx = e.clientX - rect.left;
+  const dy = e.clientY - rect.top;
+  const imgX = (dx / STATE.displayW) * STATE.imgW;
+  const imgY = (dy / STATE.displayH) * STATE.imgH;
+  STATE.taps.push({imgX, imgY});
+  drawMeasureOverlay();
+  updateTapGuide();
+  if (STATE.taps.length === 2) setTimeout(() => showResult(), 500);
+}
+
+function showMagnifier(dx, dy) {
+  const mag = document.getElementById('magnifier');
+  const magCanvas = document.getElementById('mag-canvas');
+  const ctx = magCanvas.getContext('2d');
+
+  // 돋보기 위치 (손가락 위에)
+  mag.style.display = 'block';
+  mag.style.left = (dx - 60) + 'px';
+  mag.style.top = (dy - 140) + 'px';
+
+  // 원본 이미지에서 확대
+  const imgX = (dx / STATE.displayW) * STATE.imgW;
+  const imgY = (dy / STATE.displayH) * STATE.imgH;
+  const srcSize = STATE.imgW / MAGNIFIER_ZOOM / (STATE.displayW / 120);
+  const sx = imgX - srcSize/2;
+  const sy = imgY - srcSize/2;
+
+  // 임시 캔버스에서 크롭
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = STATE.imgW;
+  tempCanvas.height = STATE.imgH;
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCtx.putImageData(STATE.capturedImageData, 0, 0);
+
+  ctx.clearRect(0, 0, 240, 240);
+  ctx.drawImage(tempCanvas, sx, sy, srcSize, srcSize, 0, 0, 240, 240);
+}
+
+function hideMagnifier() {
+  document.getElementById('magnifier').style.display = 'none';
+}
+
+function drawMeasureOverlay() {
+  const overlay = document.getElementById('measure-overlay');
+  const ctx = overlay.getContext('2d');
+  const sx = STATE.displayW / STATE.imgW;
+  const sy = STATE.displayH / STATE.imgH;
+  ctx.clearRect(0, 0, STATE.displayW, STATE.displayH);
+
+  // QR 꼭짓점 표시 (반투명)
+  ctx.strokeStyle = 'rgba(74,222,128,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  STATE.qrCorners.forEach((c,i) => {
+    const x=c.x*sx, y=c.y*sy;
+    i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+  });
+  ctx.closePath();
+  ctx.stroke();
+
+  // 탭 포인트
+  STATE.taps.forEach((t, i) => {
+    const x = t.imgX * sx;
+    const y = t.imgY * sy;
+
+    // 빨간 점
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i+1, x, y);
+  });
+
+  // 두 점 연결
+  if (STATE.taps.length === 2) {
+    const t1 = STATE.taps[0], t2 = STATE.taps[1];
+    const x1=t1.imgX*sx, y1=t1.imgY*sy, x2=t2.imgX*sx, y2=t2.imgY*sy;
+
+    // 점선
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 중간에 측정값 표시
+    const pxDist = Math.sqrt((t2.imgX-t1.imgX)**2 + (t2.imgY-t1.imgY)**2);
+    const mmDist = pxDist / STATE.pxPerMm;
+    const mx = (x1+x2)/2, my = (y1+y2)/2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    const text = `${(mmDist/10).toFixed(1)}cm`;
+    const tw = ctx.measureText(text).width + 16;
+    ctx.fillRect(mx-tw/2, my-14, tw, 28);
+    ctx.fillStyle = '#4ade80';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, mx, my);
+  }
+}
+
+function updateTapGuide() {
+  const el = document.getElementById('tap-text');
+  if (STATE.taps.length === 0) el.innerHTML = '측정할 물건의 <strong>시작점</strong>을 탭하세요';
+  else if (STATE.taps.length === 1) el.innerHTML = '측정할 물건의 <strong>끝점</strong>을 탭하세요';
+  else el.innerHTML = '<span class="success">측정 완료</span>';
+}
+
+function undoTap() {
+  if (STATE.taps.length > 0) {
+    STATE.taps.pop();
+    drawMeasureOverlay();
+    updateTapGuide();
+  }
+}
+
+// ===== Phase 4: 결과 =====
+function showResult() {
+  const t1 = STATE.taps[0], t2 = STATE.taps[1];
+  const pxDist = Math.sqrt((t2.imgX-t1.imgX)**2 + (t2.imgY-t1.imgY)**2);
+  const mmDist = pxDist / STATE.pxPerMm;
+  const cmDist = mmDist / 10;
+
+  // QR 정보
+  const sides = [];
+  for (let i=0; i<4; i++) {
+    const n=(i+1)%4;
+    const dx=STATE.qrCorners[n].x-STATE.qrCorners[i].x;
+    const dy=STATE.qrCorners[n].y-STATE.qrCorners[i].y;
+    sides.push(Math.sqrt(dx*dx+dy*dy));
+  }
+  const avgSide = sides.reduce((a,b)=>a+b,0)/4;
+  const sideDeviation = Math.max(...sides)-Math.min(...sides);
+
+  // 이력 저장
+  STATE.history.push({
+    mm: mmDist,
+    cm: cmDist,
+    pxPerMm: STATE.pxPerMm,
+    pxDist,
+    qrPixelSize: avgSide,
+    imgSize: `${STATE.imgW}x${STATE.imgH}`,
+    sideDeviation,
+    cornerPrecision: STATE.qrCorners.map(c => ({
+      x: c.x.toFixed(4),
+      y: c.y.toFixed(4),
+      isFloat: c.x % 1 !== 0 || c.y % 1 !== 0
+    })),
+  });
+
+  goPhase('result');
+
+  // 큰 결과
+  document.getElementById('big-result').innerHTML =
+    `${cmDist.toFixed(1)}<span class="unit">cm</span>`;
+
+  // 측정 상세
+  document.getElementById('measure-details').innerHTML = `
+    <div class="detail-row"><span class="label">실제 거리 (mm)</span><span class="value">${mmDist.toFixed(1)}mm</span></div>
+    <div class="detail-row"><span class="label">픽셀 거리</span><span class="value">${pxDist.toFixed(1)}px</span></div>
+    <div class="detail-row"><span class="label">px/mm 비율</span><span class="value">${STATE.pxPerMm.toFixed(4)}</span></div>
+    <div class="detail-row"><span class="label">1px 당</span><span class="value">${(1/STATE.pxPerMm).toFixed(4)}mm</span></div>
+  `;
+
+  // QR 상세
+  const hasFloat = STATE.qrCorners.some(c => c.x % 1 !== 0 || c.y % 1 !== 0);
+  document.getElementById('qr-details').innerHTML = `
+    <div class="detail-row"><span class="label">이미지 크기</span><span class="value">${STATE.imgW}x${STATE.imgH}</span></div>
+    <div class="detail-row"><span class="label">QR 픽셀 크기</span><span class="value">${avgSide.toFixed(2)}px</span></div>
+    <div class="detail-row"><span class="label">변 길이 편차</span><span class="value ${sideDeviation > avgSide*0.15 ? 'warning' : 'success'}">${sideDeviation.toFixed(2)}px</span></div>
+    <div class="detail-row"><span class="label">좌표 소수점</span><span class="value ${hasFloat ? 'success' : 'warning'}">${hasFloat ? '소수점 있음 (정밀)' : '정수만 (제한적)'}</span></div>
+    <div style="margin-top:8px; font-size:11px; color:#666; font-family:monospace;">
+      ${STATE.qrCorners.map((c,i) => `P${i+1}: (${c.x.toFixed(4)}, ${c.y.toFixed(4)})`).join('<br>')}
+    </div>
+  `;
+
+  // 이력
+  renderHistory();
+}
+
+function renderHistory() {
+  const el = document.getElementById('history-list');
+  if (STATE.history.length === 0) { el.innerHTML = '<div style="color:#666;font-size:13px">아직 측정 이력이 없습니다</div>'; return; }
+
+  el.innerHTML = STATE.history.map((h, i) => `
+    <div class="history-item">
+      <div>
+        <div class="num">${h.cm.toFixed(1)}cm</div>
+        <div style="font-size:11px;color:#666">${h.mm.toFixed(1)}mm</div>
+      </div>
+      <div class="meta">
+        #${i+1}<br>
+        QR ${h.qrPixelSize.toFixed(0)}px · ${h.pxPerMm.toFixed(2)}px/mm<br>
+        ${h.imgSize}
+      </div>
+    </div>
+  `).reverse().join('');
+}
+
+// ===== 단계 전환 =====
+function goPhase(phase) {
+  STATE.phase = phase;
+  document.getElementById('phase-camera').style.display = phase==='camera' ? '' : 'none';
+  document.getElementById('phase-detect').style.display = phase==='detect' ? '' : 'none';
+  document.getElementById('phase-measure').style.display = phase==='measure' ? '' : 'none';
+  document.getElementById('phase-result').style.display = phase==='result' ? '' : 'none';
+
+  // 단계 표시
+  const steps = ['camera','detect','measure','result'];
+  const idx = steps.indexOf(phase);
+  steps.forEach((s, i) => {
+    const el = document.getElementById('step'+(i+1));
+    el.className = 'step' + (i < idx ? ' done' : i === idx ? ' active' : '');
+  });
+
+  if (phase === 'measure') initMeasurePhase();
+}
+
+function resetAll() {
+  STATE.qrCorners = null;
+  STATE.pxPerMm = 0;
+  STATE.taps = [];
+  STATE.capturedDataUrl = null;
+  STATE.capturedImageData = null;
+  document.getElementById('detect-photo').style.display = 'none';
+  document.getElementById('measure-photo').style.display = 'none';
+  goPhase('camera');
+}
+
+window.onload = init;
+</script>
+</body>
+</html>
